@@ -1,0 +1,150 @@
+# 이 파일이 있는 SoundNote 폴더를 Git 저장소 루트로 사용합니다.
+# 소스, 한국어 문서, docs/assets 이미지, 의존성 잠금 파일은 함께 올립니다.
+
+# macOS와 편집기가 만든 개인 파일
+.DS_Store
+._*
+.AppleDouble/
+.LSOverride
+*.swp
+*.swo
+*~
+.idea/
+*.code-workspace
+
+# VSCode 설정 파일
+.vscode/
+
+# Swift / Xcode의 빌드 결과와 사용자별 상태
+.build/
+.swiftpm/
+xcuserdata/
+*.xcuserstate
+*.dSYM/
+/build/
+/dist/
+*.app/
+*.dmg
+*.pkg
+
+# Python 환경, 설치 도구, 패키지와 검사 캐시
+.venv/
+venv/
+.tools/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.ipynb_checkpoints/
+
+# 개발 맥의 절대 경로, 점검 결과, 로그
+.runtime/
+*.log
+/runtime.json
+/settings.json
+*.local.json
+*.local.toml
+*.local.yaml
+*.local.yml
+
+# 인증 정보와 서명용 개인 키. 예시에는 실제 키 대신 빈 값·설명만 넣습니다.
+.env
+.env.*
+!.env.example
+/secrets/
+/credentials/
+/secrets.json
+/credentials.json
+.netrc
+.pypirc
+*.key
+*.pem
+*.p12
+*.pfx
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile
+
+# 실제 회의·문서·내보내기·백업은 아래 로컬 폴더에 모아 보관합니다.
+# 루트에서만 제외하므로 worker/tests/data 같은 공개 가능한 검사 자료는 숨기지 않습니다.
+/data/
+/local-data/
+/private/
+/recordings/
+/drafts/
+/transcripts/
+/exports/
+/backups/
+
+# DB와 쓰기 중 보조 파일. 본문·전사문·검색 벡터가 들어갈 수 있습니다.
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-journal
+*.sqlite3-journal
+*.db-journal
+*.sqlite-wal
+*.sqlite3-wal
+*.db-wal
+*.sqlite-shm
+*.sqlite3-shm
+*.db-shm
+
+# 오디오·영상 원본. 대문자 확장자도 제외합니다.
+*.[wW][aA][vV]
+*.[mM]4[aA]
+*.[mM][pP]3
+*.[aA][aA][cC]
+*.[aA][iI][fF]
+*.[aA][iI][fF][fF]
+*.[fF][lL][aA][cC]
+*.[oO][gG][gG]
+*.[oO][pP][uU][sS]
+*.[wW][mM][aA]
+*.[mM][pP][gG][aA]
+*.[mM][pP]4
+*.[mM]4[vV]
+*.[mM][oO][vV]
+*.[mM][kK][vV]
+*.[wW][eE][bB][mM]
+
+# 앱이 묶음으로 내보내는 본문 파일과 자막
+전사문.txt
+회의록.md
+*.srt
+*.vtt
+
+# 내려받은 모델, 학습 체크포인트, 계산 배열
+# 모델의 설정·토크나이저도 포함되도록 모델 폴더 전체를 제외합니다.
+/models/
+.huggingface/
+.ollama/
+*.safetensors
+*.gguf
+*.ggml
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.tflite
+*.mlmodel
+*.mlmodelc/
+*.mlpackage/
+*.npz
+*.npy
+*.pkl
+*.pickle
+
+# README·설계 문서·소스까지 숨기지 않도록 *.md, *.txt, *.json, *.png는 일괄 제외하지 않습니다.
+# 이름을 바꿔 단독 저장한 전사문·개인 PDF 등은 /exports/ 또는 /private/에 넣으세요.

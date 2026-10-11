@@ -1,0 +1,11 @@
+# 재현 가능한 버전 잠금은 setup.sh 실행 후 requirements.lock.txt에 저장됩니다.
+# 모델 가중치는 포함하지 않습니다. Apple Silicon + Python 3.12를 사용합니다.
+mlx-whisper>=0.4.2,<0.5
+pyannote.audio>=4.0,<5
+imageio-ffmpeg>=0.6,<0.7
+huggingface-hub>=0.34,<2
+# EmbeddingGemma 2 직접 실행을 실제 검증한 라이브러리 버전입니다.
+sentence-transformers==6.1.0
+transformers==5.19.0
+# 텍스트 전용 EmbeddingGemma 2도 공용 Processor를 불러올 때 이 패키지가 필요합니다.
+torchvision>=0.26,<1
