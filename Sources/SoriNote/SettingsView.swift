@@ -4,6 +4,8 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var store: AppStore
     var previewMode = false
+    var previewEnvironment = false
+    var previewIntervals = false
     var onClose: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @ViewState<AppSettings> private var draft = AppSettings()
@@ -81,6 +83,8 @@ struct SettingsView: View {
         .frame(minWidth: 800, idealWidth: 850, minHeight: 680, idealHeight: 740)
         .onAppear {
             draft = store.settings
+            if previewEnvironment { showEnvironment = true }
+            if previewIntervals { stage = .summary }
             if !previewMode {
                 // 읽기에 실패한 키는 사전에 넣지 않아 저장 시 기존 키를 지우지 않습니다.
                 for name in Keychain.names {
@@ -100,6 +104,17 @@ struct SettingsView: View {
                 Button("기본값 복원") { draft[stage] = stage.defaultProfile }.buttonStyle(.borderless).disabled(locked)
             }
             Text(description).font(.callout).foregroundStyle(.secondary)
+            if stage == .summary { intervalOptions }
+            if stage == .speaker {
+                Toggle("화자 분리 사용", isOn: $draft.diarization).disabled(locked)
+                Text("끄면 문자 변환만 진행하고 화자 모델은 불러오지 않습니다. 기존 화자 이름과 전사문은 유지됩니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if stage == .qa || stage == .embedding {
+                Toggle("질문 답변 사용 · 검색용 임베딩 포함", isOn: $draft.qaEnabled).disabled(locked)
+                Text("끄면 질문 답변과 임베딩 모델을 불러오지 않습니다. 요약 기능과 저장된 자료·색인은 유지됩니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             VStack(alignment: .leading, spacing: 15) {
                 Picker("실행 방식", selection: Binding(get: { draft[stage].provider }, set: switchProvider)) {
                     ForEach(stage.providers, id: \.self) { Text(providerName($0)).tag($0) }
@@ -131,7 +146,6 @@ struct SettingsView: View {
                     }
                 }
                 if stage == .speaker {
-                    Toggle("문자 변환 후 화자 분리", isOn: $draft.diarization)
                     if isDirect {
                         Stepper(draft.speakerCount == 0 ? "화자 수: 자동" : "화자 수: \(draft.speakerCount)명", value: $draft.speakerCount, in: 0...30)
                     } else {
@@ -154,9 +168,12 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }.padding(18).background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 12))
-                .disabled(locked)
+                .disabled(locked || !draft.isEnabled(stage))
             Text("출고 기본값: \(stage.defaultProfile.model)").font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-            if isDirect || draft[stage].provider == "ollama" {
+            if !draft.isEnabled(stage) {
+                Label("꺼진 기능은 모델 준비와 연결 확인에서 제외합니다.", systemImage: "pause.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if isDirect || draft[stage].provider == "ollama" {
                 HStack {
                     Button("모델 다운로드 / 준비") { if save() { store.prepare(role: stage.rawValue) } }
                     if stage == .speaker || stage == .embedding {
@@ -168,18 +185,49 @@ struct SettingsView: View {
             } else {
                 Button("저장하고 연결 확인") { if save() { store.diagnostic() } }.disabled(locked)
             }
-            if stage == .embedding {
+            if stage == .embedding && draft.qaEnabled {
                 Button("검색 색인 비우고 다음 검색에서 재생성") { if save() { store.reindex() } }.disabled(locked)
             }
         }
     }
 
+    private var intervalOptions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle("자동 구간 요약", isOn: $draft.intervalSummaryEnabled).font(.headline)
+            Text("녹음 중이나 기존 파일의 문자 변환 중에, 완료된 구간부터 전사문과 요약을 저장합니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Text("요약 간격")
+                TextField("분", value: $draft.intervalMinutes, format: .number).frame(width: 48).textFieldStyle(.roundedBorder)
+                Text("분")
+                Stepper("간격 조정", value: $draft.intervalMinutes, in: 1...30).labelsHidden()
+                Spacer()
+                Text(draft.asr.provider == "openai" ? "API: 1~13분" : "1~30분").font(.caption).foregroundStyle(.secondary)
+            }.disabled(!draft.intervalSummaryEnabled)
+            Toggle("종료 후 전체 요약 만들기", isOn: $draft.intervalFinalSummary).disabled(!draft.intervalSummaryEnabled)
+            Text("녹음 길이 기준이며 일시 정지 시간은 제외합니다. 전사 → 요약을 순서대로 실행하므로 결과 표시에는 처리 시간이 더 걸립니다. 질문 답변을 꺼도 사용할 수 있습니다.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("아래 회의 요약 모델·서버·API Key를 함께 사용합니다. 화자 분리를 켰다면 전체 녹음 처리 후 한 번 실행합니다.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(16).background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 12)).disabled(locked)
+    }
+
     private var environment: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("공통 환경").font(.title3.bold())
+            VStack(alignment: .leading, spacing: 12) {
+                Text("메모리에 맞춰 기능 선택").font(.headline)
+                Toggle("화자 분리 사용", isOn: $draft.diarization)
+                Toggle("질문 답변 사용 · 검색용 임베딩 포함", isOn: $draft.qaEnabled)
+                Text("메모리가 부족하면 필요한 기능만 켜세요. 끈 기능은 다음 작업부터 모델을 불러오지 않습니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("화자 분리 약 4~8GB, 임베딩 약 3~5GB의 처리 단계를 생략할 수 있습니다. 요약을 사용하면 Gemma 약 8~12GB는 여전히 필요합니다. 수치는 추정치이며 화자 모델은 실측 전입니다.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(.white.opacity(0.8), in: RoundedRectangle(cornerRadius: 12)).disabled(locked)
             if RuntimeInstaller.resources != nil {
                 Button("자동 설치 / 복구…") {
-                    if save() { store.error = nil; store.notice = nil; store.setupFinished = false; showSetup = true }
+                    if save() { store.error = nil; store.notice = nil; store.setupFinished = false; store.setupRuntimeReady = false; showSetup = true }
                 }.disabled(locked)
                 .sheet(isPresented: $showSetup) {
                     RuntimeSetupView(store: store) { showSetup = false; draft = store.settings }
@@ -188,6 +236,7 @@ struct SettingsView: View {
             Toggle("외부 서버로 음성·텍스트 전송 허용", isOn: $draft.allowRemote)
             Text(draft.allowRemote ? "API 방식으로 선택한 단계는 설정한 서버에 음성 또는 텍스트를 보냅니다. 외부 서버 주소는 HTTPS만 허용합니다." : "루프백 주소와 직접 실행만 허용합니다. 별도 로컬 서버가 외부로 중계하는지는 그 서버의 설정을 확인하세요.")
                 .font(.caption).foregroundStyle(draft.allowRemote ? .orange : .secondary)
+            DownloadSettingsView(settings: $draft.runtime.network)
             labeled("Python 실행 파일의 절대 경로") { TextField("프로젝트/.venv/bin/python", text: $draft.pythonPath).textFieldStyle(.roundedBorder) }
             labeled("Hugging Face Token · 모델 다운로드 인증") { SecureField("읽기 토큰", text: key("hfToken")).textFieldStyle(.roundedBorder) }
             Text("접근 제한 모델은 해당 계정으로 이용 조건에 동의한 뒤 준비하세요. 직접 실행 모드에서는 이 토큰으로 회의 내용을 보내지 않습니다.")
@@ -236,11 +285,13 @@ struct SettingsView: View {
             // 별도 음성 설정 창에서 저장한 녹음 입력을 오래된 모델 편집본으로 덮어쓰지 않습니다.
             draft.audio = store.settings.audio
             try draft.validate()
+            try draft.runtime.network.validate()
             for name in Keychain.names where keys[name] != originalKeys[name] {
                 if let value = keys[name] { try Keychain.save(value, name: name) }
             }
             try draft.save()
             store.settings = draft; originalKeys = keys
+            if !draft.qaEnabled { store.answer = nil }
             store.checks = []; store.error = nil; store.notice = nil
             failed = false; message = "저장했습니다. 다음 작업부터 선택한 모델을 기본값으로 사용합니다."
             return true

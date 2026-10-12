@@ -32,6 +32,7 @@ SwiftUI는 화면·파일 선택·마이크·재생·키체인을 담당합니�
 | `providers.py` | Ollama와 OpenAI 호환 API의 공통 인터페이스 |
 | `audio.py` | MLX 또는 API 전사, pyannote 또는 API 화자 구간, 시각 검증과 정렬 |
 | `local_embedding.py` | EmbeddingGemma 2 등 Sentence Transformers 모델의 오프라인 직접 실행 |
+| `intervals.py` | 시간별 분할·전사·문맥 요약, 완료 구간 재사용과 마지막 화자·전체 요약 처리 |
 | `intelligence.py` | 문서 분할, 재귀 요약, 임베딩, 검색과 답변 생성 |
 
 ## 마이크·시스템 오디오 녹음 구조
@@ -66,6 +67,8 @@ flowchart LR
 Apple 참고: [ScreenCaptureKit 캡처 구성과 출력](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos), [시스템 오디오 권한 설명](https://developer.apple.com/documentation/bundleresources/information-property-list/nsaudiocaptureusagedescription).
 
 ## 회의 처리 순서
+
+아래는 자동 구간 요약을 끈 기존 경로입니다. 켠 경우의 구조와 저장·복구 계약은 [자동 구간 요약 개발 안내](INTERVAL_SUMMARY.md#개발자를-위한-구조)를 참고하세요.
 
 ```mermaid
 sequenceDiagram
@@ -237,6 +240,10 @@ Sentence Transformers 6.1.0·Transformers 5.19.0 조합을 검증했습니다. �
 | `delete` | `id` | 삭제한 ID |
 | `transcribe` | `id` | 전사·선택형 화자 분리 결과 |
 | `summarize` | `id` | 요약을 추가한 기록 |
+| `interval` | `id`, 닫힌 `audioPath`, `start`, `end` | 전사·문맥 요약을 저장한 기록, 중간 `entry` 이벤트 |
+| `continueIntervals` | `id` | 저장된 간격으로 남은 구간과 후처리를 완료한 기록 |
+| `finalizeIntervals` | `id` | 선택형 전체 화자 분리·최종 요약을 완료한 기록 |
+| `attachAudio` | `id`, `audioPath` | 기존 구간 기록을 보존하며 원음을 연결한 기록 |
 | `ask` | `question`, 선택적 `id` | 답변과 출처 |
 | `prepare` | `role`: `asr`, `speaker`, `embedding` 중 하나 | 해당 직접 실행 모델 다운로드 안내. 생략하면 기본 활성 로컬 단계 준비 |
 | `diagnostic` | 모델 설정 | 엔진 설치·모델 서버 연결 상태 |
@@ -274,9 +281,9 @@ flowchart LR
 
 ### 내부 데이터와 백업
 
-SQLite 스키마 버전은 현재 1입니다. `entries`에는 ID, 제목, 종류, 생성 시각, 원문, 전사 구간 JSON, 요약, 녹음 경로, 경고가 들어갑니다. `chunks`는 기록 ID와 문단 번호를 복합 키로 사용하며, 원문 문단·벡터·색인 식별값을 보관합니다. 외래 키와 `ON DELETE CASCADE`를 켜 둡니다.
+SQLite 스키마 버전은 현재 2입니다. 기존 DB에는 `interval_seconds`, `interval_complete` 열과 `interval_notes` 테이블을 추가하며 기록을 지우지 않습니다. 구간 테이블에는 구간별 전사·시각·요약·누적 맥락·완료 상태를 보관합니다. `entries`에는 ID, 제목, 종류, 생성 시각, 원문, 전사 구간 JSON, 요약, 녹음 경로, 경고가 들어갑니다. `chunks`는 기록 ID와 문단 번호를 복합 키로 사용하며, 원문 문단·벡터·색인 식별값을 보관합니다. 외래 키와 `ON DELETE CASCADE`를 켜 둡니다.
 
-본문을 바꾸면 기존 요약과 색인을 비웁니다. GUI 본문 편집은 이전 시간 구간도 비웁니다. 제목만 바꾸면 원문과 요약을 유지하며 검색 색인은 다음 질문 때 제목을 포함한 새 식별값으로 갱신합니다. 화자 이름 변경은 본문도 바꾸므로 요약을 다시 만들어야 합니다.
+본문을 수동으로 바꾸면 기존 전체·구간 요약과 색인을 비웁니다. 구간 추가와 마지막 화자 정렬은 별도 저장 경로로 구간 요약을 유지합니다. GUI 본문 편집은 이전 시간 구간도 비웁니다. 제목만 바꾸면 원문과 요약을 유지하며 검색 색인은 다음 질문 때 제목을 포함한 새 식별값으로 갱신합니다. 화자 이름 변경은 본문도 바꾸므로 요약을 다시 만들어야 합니다.
 
 녹음은 먼저 `drafts/`에 기록합니다. 완료 시 앱 저장소에 사본을 만든 뒤 초안을 삭제합니다. 저장 전에 종료하면 다음 앱 실행에서 남은 초안 파일을 새 기록으로 등록합니다. 전원 차단 등으로 파일 컨테이너 자체가 손상된 경우까지 복구하는 기능은 아닙니다.
 
@@ -317,3 +324,37 @@ python3 scripts/smoke-api.py
 동시 처리를 추가한다면 현재의 단일 `activeWorker`와 선택 항목 변경 방식을 먼저 바꿔야 합니다. 실시간 자막은 녹음 청크 관리·중복 제거·확정 구간 처리까지 별도 설계가 필요합니다. 시스템 오디오는 구현되어 있으며, 실제 Teams·출력 음소거·Bluetooth 장치 조합의 실기 검증을 추가해야 합니다.
 
 우선 개선할 부분은 실제 한국어 회의의 품질 평가, 개별 발언 화자 교정, 장시간 녹음 복구, 대규모 라이브러리 검색, 새로운 맥에서의 설치 검증과 배포 공증입니다.
+
+
+## 회사 환경 설치와 venv 연결 · 0.6.0
+
+`RuntimeConfiguration.swift`는 실행 방식과 다운로드 옵션을 정의합니다. 기존 `settings.json`에 `runtime` 필드가 없어도 기본값으로 읽으며 단계별 모델과 키체인 값은 유지합니다. 설치 대상에 영향을 주는 환경 변수는 제외하지만, CA·프록시·미러 설정과 uv 설정 파일은 이어받습니다. 화면에서 입력한 비밀 정보 없는 값을 우선 적용합니다.
+
+`RuntimeInstaller`는 파일 잠금을 획득한 뒤 Python 3.12/arm64와 venv 여부를 검사합니다. 새 전용 환경은 최종 위치에서 만든 뒤 고정 패키지 버전과 import를 검사하고 완료 포인터를 원자적으로 교체합니다. 외부 venv는 앱 설정의 Python 경로로만 연결하고 관리 환경의 `runtime.json`은 바꾸지 않습니다. 기본 읽기 검사만 하며, 사용자가 선택한 경우에만 `uv pip install -r`로 패키지를 추가·조정합니다. 외부 환경에 `sync`를 실행해 다른 패키지를 지우지 않습니다.
+
+설치 프로세스의 stdout/stderr는 같은 파이프로 즉시 읽습니다. 마지막 64KB만 유지하고 URL·인증 관련 줄을 가린 뒤 최대 6,000자를 표시합니다. 잘린 첫 줄은 버려 토큰이나 URL의 일부가 남지 않게 합니다. 원문 로그는 파일로 저장하지 않습니다. 화면에 복사 버튼을 제공하며 원격 보고는 하지 않습니다.
+
+`AppStore`는 실행 환경 완료와 모델 준비 완료를 별도로 보관합니다. 엔진 완료 직후 Python 경로를 저장하고 모델 요청을 보냅니다. 모델 실패 후 재시도는 `install_models`만 실행합니다. 모델 캐시의 파일 재사용은 Hugging Face/Ollama에 맡기며 개별 모델의 완료 상태를 별도 DB에 기록하지 않습니다.
+
+`worker/sorinote/network.py`는 워커 진입점에서 AI 작업에만 적용합니다. 다른 HTTP 라이브러리를 가져오기 전에 truststore를 연결하고, 명시된 PEM이 있으면 그 경로를 사용합니다. 오프라인 준비는 Hugging Face의 로컬 파일 전용 로딩과 Ollama의 설치 확인으로 처리합니다. 로컬 모델 API에는 프록시를 사용하지 않습니다.
+
+회귀 검사는 `Tests/InstallerSmoke/main.swift`, `worker/tests/test_network.py`에 있습니다. 실제 회사 서버 없이 Python/uv 모의 실행 파일, 환경 변수, 대용량 오류, 취소와 이전 환경 보존을 확인합니다. 실제 설치와 TLS 검사는 [검증 기록](VERIFICATION.md)을 참고하세요.
+
+워커는 `dispatch_with_servers`에서 작업에 필요한 내장 Ollama를 먼저 준비합니다. `ask`에서는 임베딩 모델을 로드하기 전에 준비를 마치고, `ExitStack`으로 작업 성공·오류·취소 때 직접 시작한 서버를 정리합니다. 개별 Provider 요청은 이미 준비된 서버를 재사용하므로 모델 확인과 채팅 사이에 서버가 반복해서 시작되지 않습니다. GPU 초기화 대기는 최대 45초이며 화면에는 서버 준비 단계를 표시합니다.
+
+
+## 선택 기능과 메모리 사용 · 0.6.1
+
+`AppSettings.qaEnabled`의 기본값은 `true`이며 이전 설정 파일에 필드가 없으면 켜짐으로 읽습니다. 화자 분리에는 기존 `diarization`을 계속 사용합니다. Swift의 `isEnabled`와 Python의 `stage_enabled`는 질문 답변을 끌 때 임베딩도 함께 비활성화하는 규칙을 공유합니다. 모델 프로필·키·기록·색인은 바꾸지 않습니다.
+
+준비·진단·내장 서버 시작은 사용 중인 단계만 순회합니다. `ask`는 Swift와 워커 진입점 모두에서 검사하여 꺼진 경우 네트워크 초기화, 서버 시작과 DB 접근 전에 거절합니다. 설정 저장 후 질문 영역을 안내 화면으로 바꾸며 진행 중인 작업이 있을 때는 토글을 잠급니다. 공용 패키지를 제거하거나 캐시 파일을 지우는 기능은 아닙니다.
+
+기능 토글은 색인 지문에 포함하지 않습니다. 껐다 켜도 임베딩 모델·입력 형식·원문이 같으면 기존 색인을 재사용할 수 있습니다. 검사는 `worker/tests/test_features.py`와 Swift 설정 검사에 있으며 차단·독립 선택·다시 켜기·기존 자료 보존을 확인합니다.
+
+## 자동 구간 요약 · 0.7.0
+
+한 번에 워커 하나만 실행하는 원칙은 유지하며 녹음 제어만 독립적으로 실행합니다. 녹음 중에는 `liveProcessing`으로 일시 정지·녹음 완료를 허용하고, AI 취소는 `liveSummaryPaused`로 남겨 녹음이 끝날 때까지 원음을 보존합니다. 앱 종료는 워커 취소와 오디오 마무리, 진행 작업의 저장 완료를 기다립니다.
+
+워커 이벤트에 `entry`가 추가되었습니다. `data`는 저장된 `Entry` 전체이며 전사 커밋과 구간 요약 커밋 뒤 각각 전달합니다. `WorkerClient`는 중간 결과를 UI에 전달하고 최종 `result`도 기존처럼 반환합니다. `activeCallID`가 다른 이전 요청의 늦은 UI 이벤트는 무시합니다.
+
+새 작업은 `interval`(닫힌 구간 사본), `continueIntervals`(기존 파일의 남은 구간), `finalizeIntervals`(화자·전체 요약 후처리), `attachAudio`(원음 연결)입니다. 설정·DB 필드, 상태 전이, 파일 처리와 복구 세부 사항은 [자동 구간 요약 안내서](INTERVAL_SUMMARY.md)에 정리했습니다.

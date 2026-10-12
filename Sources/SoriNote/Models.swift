@@ -93,10 +93,15 @@ struct AudioSettings: Codable, Equatable {
 struct AppSettings: Codable, Equatable {
     var settingsVersion = 2
     var audio = AudioSettings()
+    var runtime = RuntimeSettings()
     var pythonPath = "/usr/bin/python3"
     var asr = ModelStage.asr.defaultProfile
     var speaker = ModelStage.speaker.defaultProfile
     var diarization = false
+    var qaEnabled = true
+    var intervalSummaryEnabled = false
+    var intervalMinutes = 5
+    var intervalFinalSummary = true
     var speakerCount = 0
     var language = "ko"
     var allowRemote = false
@@ -106,7 +111,8 @@ struct AppSettings: Codable, Equatable {
 
     init() {}
     enum CodingKeys: String, CodingKey {
-        case audio, settingsVersion, pythonPath, asr, speaker, diarization, speakerCount, language, allowRemote, summary, qa, embedding
+        case intervalSummaryEnabled, intervalMinutes, intervalFinalSummary
+        case runtime, audio, settingsVersion, pythonPath, asr, speaker, diarization, qaEnabled, speakerCount, language, allowRemote, summary, qa, embedding
     }
     enum LegacyKeys: String, CodingKey { case asrModel, diarizationModel }
     init(from decoder: Decoder) throws {
@@ -115,12 +121,17 @@ struct AppSettings: Codable, Equatable {
         let old = try decoder.container(keyedBy: LegacyKeys.self)
         let version = try c.decodeIfPresent(Int.self, forKey: .settingsVersion) ?? 1
         audio = try c.decodeIfPresent(AudioSettings.self, forKey: .audio) ?? audio
+        runtime = try c.decodeIfPresent(RuntimeSettings.self, forKey: .runtime) ?? runtime
         pythonPath = try c.decodeIfPresent(String.self, forKey: .pythonPath) ?? pythonPath
         asr = try c.decodeIfPresent(ModelProfile.self, forKey: .asr) ?? asr
         speaker = try c.decodeIfPresent(ModelProfile.self, forKey: .speaker) ?? speaker
         if !c.contains(.asr), let name = try old.decodeIfPresent(String.self, forKey: .asrModel) { asr.model = name }
         if !c.contains(.speaker), let name = try old.decodeIfPresent(String.self, forKey: .diarizationModel) { speaker.model = name }
         diarization = try c.decodeIfPresent(Bool.self, forKey: .diarization) ?? diarization
+        qaEnabled = try c.decodeIfPresent(Bool.self, forKey: .qaEnabled) ?? qaEnabled
+        intervalSummaryEnabled = try c.decodeIfPresent(Bool.self, forKey: .intervalSummaryEnabled) ?? intervalSummaryEnabled
+        intervalMinutes = try c.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? intervalMinutes
+        intervalFinalSummary = try c.decodeIfPresent(Bool.self, forKey: .intervalFinalSummary) ?? intervalFinalSummary
         speakerCount = try c.decodeIfPresent(Int.self, forKey: .speakerCount) ?? speakerCount
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? language
         allowRemote = try c.decodeIfPresent(Bool.self, forKey: .allowRemote) ?? allowRemote
@@ -138,15 +149,28 @@ struct AppSettings: Codable, Equatable {
             case .embedding: embedding = newValue; case .qa: qa = newValue } }
     }
 
+    /// 질문 답변을 끄면 검색용 임베딩도 사용하지 않습니다. 모델 설정과 저장된 색인은 유지합니다.
+    func isEnabled(_ stage: ModelStage) -> Bool {
+        switch stage {
+        case .speaker: diarization
+        case .qa, .embedding: qaEnabled
+        default: true
+        }
+    }
+
     func validate() throws {
         try audio.validate()
+        guard (1...30).contains(intervalMinutes) else { throw AppFailure(message: "자동 구간 요약 간격은 1~30분으로 설정하세요.") }
+        if intervalSummaryEnabled && asr.provider == "openai" && intervalMinutes > 13 {
+            throw AppFailure(message: "음성 API는 파일당 25MB 제한이 있어 구간 간격을 13분 이하로 설정하세요.")
+        }
         guard pythonPath.hasPrefix("/") else { throw AppFailure(message: "Python 실행 파일의 절대 경로를 입력하세요.") }
         for stage in ModelStage.allCases {
             let profile = self[stage]
-            guard stage.providers.contains(profile.provider), !profile.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard stage.providers.contains(profile.provider), !isEnabled(stage) || !profile.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw AppFailure(message: "\(stage.title): 실행 방식과 모델 이름을 확인하세요.")
             }
-            if ["ollama", "openai"].contains(profile.provider) {
+            if ["ollama", "openai"].contains(profile.provider), isEnabled(stage) || !profile.url.isEmpty {
                 guard let url = URLComponents(string: profile.url), ["http", "https"].contains(url.scheme ?? ""),
                       let host = url.host, !host.isEmpty, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else {
                     throw AppFailure(message: "\(stage.title): 올바른 서버 기본 주소를 입력하세요. API Key는 별도 칸에 넣습니다.")
@@ -220,6 +244,42 @@ struct Entry: Codable, Identifiable {
     var summary: String
     let audio_path: String
     let warning: String
+    var interval_notes: [IntervalNote] = []
+    var interval_seconds: Int = 0
+    var interval_complete: Int = 0
+    var hasPendingIntervals: Bool { interval_seconds > 0 && interval_complete == 0 }
+    enum CodingKeys: String, CodingKey {
+        case id, title, kind, created, text, segments, summary, audio_path, warning
+        case interval_notes, interval_seconds, interval_complete
+    }
+}
+
+struct IntervalNote: Codable, Identifiable {
+    var id: Int { ordinal }
+    let ordinal: Int
+    let start: Double
+    let end: Double
+    let summary: String
+    let status: String
+}
+
+extension Entry {
+    // 이전 기록에는 구간 요약이 없어도 정상적으로 열립니다.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        kind = try c.decode(String.self, forKey: .kind)
+        created = try c.decode(String.self, forKey: .created)
+        text = try c.decode(String.self, forKey: .text)
+        segments = try c.decode([Segment].self, forKey: .segments)
+        summary = try c.decode(String.self, forKey: .summary)
+        audio_path = try c.decode(String.self, forKey: .audio_path)
+        warning = try c.decode(String.self, forKey: .warning)
+        interval_notes = try c.decodeIfPresent([IntervalNote].self, forKey: .interval_notes) ?? []
+        interval_seconds = try c.decodeIfPresent(Int.self, forKey: .interval_seconds) ?? 0
+        interval_complete = try c.decodeIfPresent(Int.self, forKey: .interval_complete) ?? 0
+    }
 }
 
 struct Source: Codable, Identifiable {

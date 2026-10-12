@@ -9,6 +9,10 @@ DEFAULTS = {
     "asr": {"provider": "mlx", "url": "", "model": "mlx-community/whisper-large-v3-turbo", "responseFormat": "verbose_json"},
     "speaker": {"provider": "pyannote", "url": "", "model": "pyannote/speaker-diarization-community-1"},
     "diarization": False,
+    "qaEnabled": True,
+    "intervalSummaryEnabled": False,
+    "intervalMinutes": 5,
+    "intervalFinalSummary": True,
     "speakerCount": 0,
     "language": "ko",
     "allowRemote": False,
@@ -35,6 +39,21 @@ def settings(value=None):
         if old in (value or {}) and stage not in (value or {}):
             result[stage]["model"] = value[old]
     return result
+
+
+def stage_enabled(config, role):
+    """전환 설정은 준비·진단·서버 시작에서 공통으로 사용합니다. 저장된 모델 설정은 지우지 않습니다."""
+    if role == "speaker":
+        return config.get("diarization", False)
+    if role in ("qa", "embedding"):
+        return config.get("qaEnabled", True)
+    return True
+
+
+def require_action_enabled(config, action):
+    # UI를 거치지 않는 워커 요청도 모델·서버·색인에 접근하기 전에 막습니다.
+    if action == "ask" and not stage_enabled(config, "qa"):
+        raise ValueError("질문 답변이 꺼져 있습니다. 모델 및 환경 설정에서 다시 켜 주세요.")
 
 
 def validate_profile(role, profile, allow_remote=False):

@@ -31,7 +31,9 @@ struct ContentView: View {
                         ProgressView().controlSize(.small)
                         Text(store.progress).font(.callout)
                         Spacer()
-                        Button("취소") { store.cancel() }.buttonStyle(.borderless)
+                        if !store.liveSummaryPaused {
+                            Button(store.liveProcessing ? "자동 요약 중지" : "취소") { store.cancel() }.buttonStyle(.borderless)
+                        }
                     }.padding(14).background(accent.opacity(0.08))
                 }
                 if let notice = store.notice {
@@ -53,7 +55,16 @@ struct ContentView: View {
         .foregroundStyle(ink)
         .tint(accent)
         .preferredColorScheme(.light)
-        .task { if !previewMode { store.launch() } }
+        .task {
+            if !previewMode { store.launch() }
+            else if !(store.selected?.interval_notes.isEmpty ?? true) { section = "구간 요약" }
+        }
+        .onChange(of: store.selected?.id) { _, _ in
+            if let entry = store.selected, (!entry.interval_notes.isEmpty || entry.hasPendingIntervals), entry.summary.isEmpty { section = "구간 요약" }
+        }
+        .onChange(of: store.selected?.interval_notes.count ?? 0) { old, count in
+            if old == 0 && count > 0 { section = "구간 요약" }
+        }
         .alert("확인이 필요합니다", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("확인") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -159,8 +170,8 @@ struct ContentView: View {
             if audio.activeSource.usesMicrophone { inputMeter("마이크", level: audio.microphoneLevel) }
             if audio.activeSource.usesSystem { inputMeter("시스템", level: audio.systemLevel) }
             Spacer()
-            Button(audio.paused ? "이어 녹음" : "일시 정지") { audio.pauseOrResume() }.disabled(store.busy)
-            Button("녹음 완료") { store.stopRecording() }.buttonStyle(.borderedProminent).disabled(store.busy)
+            Button(audio.paused ? "이어 녹음" : "일시 정지") { audio.pauseOrResume() }.disabled(store.busy && !store.liveProcessing)
+            Button("녹음 완료") { store.stopRecording() }.buttonStyle(.borderedProminent).disabled(store.busy && !store.liveProcessing)
         }.padding(18).background(accent.opacity(0.08))
     }
 
@@ -225,6 +236,9 @@ struct ContentView: View {
                             if entry.text.isEmpty { store.processSelected("transcribe") } else { retranscribing = true }
                         } label: { Label("문자 변환", systemImage: "waveform.badge.mic") }
                     }
+                    if entry.hasPendingIntervals && !entry.audio_path.isEmpty {
+                        Button("구간 처리 이어하기") { store.processSelected("continueIntervals"); section = "구간 요약" }
+                    }
                     Button { store.processSelected("summarize"); section = "요약" } label: {
                         Label(entry.summary.isEmpty ? "AI 요약 만들기" : "다시 요약하기", systemImage: "sparkles")
                     }.buttonStyle(.borderedProminent).disabled(entry.text.isEmpty)
@@ -242,10 +256,32 @@ struct ContentView: View {
                 }.font(.caption).padding(14).background(.white, in: RoundedRectangle(cornerRadius: 12))
                     .disabled(audio.recording)
             }
-            Picker("보기", selection: $section) { Text("요약").tag("요약"); Text("원문·화자").tag("원문·화자") }.pickerStyle(.segmented)
+            Picker("보기", selection: $section) {
+                Text("요약").tag("요약")
+                if !entry.interval_notes.isEmpty || entry.hasPendingIntervals { Text("구간 요약").tag("구간 요약") }
+                Text("원문·화자").tag("원문·화자")
+            }.pickerStyle(.segmented)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if section == "요약" {
+                    if section == "구간 요약" {
+                        Text("각 구간은 앞선 논의의 맥락을 참고해 정리합니다. 중간 요약의 결정이 이후에 바뀔 수 있으므로 마지막 요약과 원문도 확인하세요.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if entry.interval_notes.isEmpty {
+                            emptyNote("첫 구간을 기다리고 있어요", "설정한 분량이 모이면 전사와 요약을 차례로 시작합니다.", "clock")
+                        }
+                        ForEach(entry.interval_notes) { note in
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack {
+                                    Text("\(clockText(note.start)) ~ \(clockText(note.end))").font(.caption.monospacedDigit().bold()).foregroundStyle(accent)
+                                    Spacer()
+                                    if note.status != "complete" { Text("전사 저장됨 · 요약 대기").font(.caption).foregroundStyle(.secondary) }
+                                }
+                                Text(.init(note.summary.isEmpty ? "이 구간의 전사문을 저장했습니다. 요약은 처리 중이거나 이어서 처리할 수 있습니다." : note.summary))
+                                    .font(.body).lineSpacing(5).textSelection(.enabled)
+                            }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.white.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
+                        }
+                    } else if section == "요약" {
                         if entry.summary.isEmpty {
                             emptyNote("핵심 내용만, 한눈에", "문자 변환이나 문서 가져오기를 마친 뒤\n‘AI 요약 만들기’를 눌러 보세요.", "sparkles")
                         } else {
@@ -263,7 +299,7 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 6) {
                                     Button(segment.speaker) {
                                         renameOld = segment.speaker; renameNew = segment.speaker; renaming = true
-                                    }.font(.caption.bold()).buttonStyle(.plain).disabled(store.busy)
+                                    }.font(.caption.bold()).buttonStyle(.plain).disabled(store.busy || audio.recording)
                                     Text(segment.text).lineSpacing(5).textSelection(.enabled)
                                 }
                             }.frame(maxWidth: .infinity, alignment: .leading)
@@ -287,47 +323,55 @@ struct ContentView: View {
     private var questionPane: some View {
         VStack(alignment: .leading, spacing: 18) {
             Label("내 기록에 질문하기", systemImage: "sparkle.magnifyingglass").font(.headline)
-            Text("기록 속에서 답을 찾고,\n근거가 된 문단까지 확인하세요.").font(.callout).foregroundStyle(.secondary).lineSpacing(4)
-            Picker("검색 범위", selection: $allSources) {
-                Text("모든 자료").tag(true); Text("선택한 자료").tag(false)
-            }.pickerStyle(.segmented)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if let answer = store.answer {
-                        Text(.init(answer.answer)).font(.callout).lineSpacing(5).textSelection(.enabled)
-                        Divider()
-                        Text("검색된 근거 · 답변과 함께 확인하세요").font(.caption.bold())
-                        ForEach(answer.sources) { source in
-                            DisclosureGroup("[\(source.number)] \(source.title)") {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(source.text).font(.caption).lineSpacing(3).textSelection(.enabled)
-                                    Button("원문 열기") { store.select(source.entry_id); section = "원문·화자" }
-                                        .disabled(store.busy)
-                                }.padding(.top, 8)
-                            }.font(.caption).padding(10).background(paper, in: RoundedRectangle(cornerRadius: 9))
+            if !store.settings.qaEnabled {
+                Label("질문 답변 꺼짐", systemImage: "pause.circle").foregroundStyle(.secondary)
+                Text("메모리 사용을 줄이기 위해 질문 답변과 검색용 임베딩을 사용하지 않습니다. 녹음·문자 변환·요약은 계속 사용할 수 있습니다.")
+                    .font(.callout).foregroundStyle(.secondary).lineSpacing(4)
+                Button("모델 및 환경 설정 열기") { configuring = true }
+                Spacer()
+            } else {
+                Text("기록 속에서 답을 찾고,\n근거가 된 문단까지 확인하세요.").font(.callout).foregroundStyle(.secondary).lineSpacing(4)
+                Picker("검색 범위", selection: $allSources) {
+                    Text("모든 자료").tag(true); Text("선택한 자료").tag(false)
+                }.pickerStyle(.segmented)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if let answer = store.answer {
+                            Text(.init(answer.answer)).font(.callout).lineSpacing(5).textSelection(.enabled)
+                            Divider()
+                            Text("검색된 근거 · 답변과 함께 확인하세요").font(.caption.bold())
+                            ForEach(answer.sources) { source in
+                                DisclosureGroup("[\(source.number)] \(source.title)") {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        Text(source.text).font(.caption).lineSpacing(3).textSelection(.enabled)
+                                        Button("원문 열기") { store.select(source.entry_id); section = "원문·화자" }
+                                            .disabled(store.busy)
+                                    }.padding(.top, 8)
+                                }.font(.caption).padding(10).background(paper, in: RoundedRectangle(cornerRadius: 9))
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("이렇게 물어보세요").font(.caption).foregroundStyle(.secondary)
+                                suggestion("이번 회의에서 결정한 내용은?")
+                                suggestion("담당자별로 해야 할 일을 알려줘")
+                                suggestion("아직 정하지 못한 일정이 있어?")
+                            }.padding(.top, 20)
                         }
-                    } else {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("이렇게 물어보세요").font(.caption).foregroundStyle(.secondary)
-                            suggestion("이번 회의에서 결정한 내용은?")
-                            suggestion("담당자별로 해야 할 일을 알려줘")
-                            suggestion("아직 정하지 못한 일정이 있어?")
-                        }.padding(.top, 20)
                     }
                 }
-            }
-            VStack(spacing: 10) {
-                TextField("자료에 대해 궁금한 내용을 적어 주세요", text: $question, axis: .vertical)
-                    .lineLimit(3...6).textFieldStyle(.plain).padding(12)
-                    .background(paper, in: RoundedRectangle(cornerRadius: 10))
-                Button {
-                    store.ask(question, all: allSources)
-                } label: { Label("질문 보내기", systemImage: "arrow.up").frame(maxWidth: .infinity) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(store.busy || audio.recording || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                              || store.entries.isEmpty || (!allSources && store.selected == nil))
-                Text(store.settings.allowRemote ? "설정한 외부 서버로 텍스트가 전송될 수 있습니다." : "답변은 설정한 로컬 모델에서 생성합니다.")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                VStack(spacing: 10) {
+                    TextField("자료에 대해 궁금한 내용을 적어 주세요", text: $question, axis: .vertical)
+                        .lineLimit(3...6).textFieldStyle(.plain).padding(12)
+                        .background(paper, in: RoundedRectangle(cornerRadius: 10))
+                    Button {
+                        store.ask(question, all: allSources)
+                    } label: { Label("질문 보내기", systemImage: "arrow.up").frame(maxWidth: .infinity) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.busy || audio.recording || question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                  || store.entries.isEmpty || (!allSources && store.selected == nil))
+                    Text(store.settings.allowRemote ? "설정한 외부 서버로 텍스트가 전송될 수 있습니다." : "답변은 설정한 로컬 모델에서 생성합니다.")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                }
             }
         }.padding(20).frame(maxHeight: .infinity).background(.white.opacity(0.8))
     }
@@ -356,7 +400,7 @@ struct EditorView: View {
             Text("기록 수정").font(.title2.bold())
             TextField("제목", text: $title).textFieldStyle(.roundedBorder)
             TextEditor(text: $text).font(.body).border(.gray.opacity(0.2))
-            Text("본문을 수정하면 이전 시각·화자 구간과 AI 요약을 비웁니다. 화자 이름만 바꾸려면 원문 화면에서 이름을 누르세요.")
+            Text("본문을 수정하면 이전 시각·화자 구간과 전체·구간 요약을 비웁니다. 화자 이름만 바꾸려면 원문 화면에서 이름을 누르세요.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer(); Button("취소") { dismiss() }

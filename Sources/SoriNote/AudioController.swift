@@ -15,6 +15,13 @@ final class AudioController: NSObject, ObservableObject {
     @Published var systemLevel: Double = 0
     @Published var activeSource: RecordingSource = .microphone
     @Published var captureNotice: String?
+    private(set) var recordingURL: URL?
+    var availableFrames: Int64 { session?.status().writtenFrames ?? 0 }
+    /// 녹음 중지와 마지막 파일 쓰기가 겹쳐도 완료를 기다린 뒤 원음을 넘깁니다.
+    func completedRecordingURL() async throws -> URL? {
+        if let finishing { return try await finishing.value }
+        return recordingURL
+    }
     private var session: AudioCaptureSession?
     private var sessionID: UUID?
     private var finishing: Task<URL?, Error>?
@@ -63,7 +70,7 @@ final class AudioController: NSObject, ObservableObject {
         let capture = AudioCaptureSession()
         recordingError = nil; captureNotice = nil; elapsed = 0
         let identifier = UUID()
-        session = capture; sessionID = identifier
+        session = capture; sessionID = identifier; recordingURL = url
         do {
             try await capture.start(url: url, settings: settings) { [weak self] message in
                 Task { @MainActor in
@@ -78,7 +85,7 @@ final class AudioController: NSObject, ObservableObject {
             recording = true; paused = false
         } catch {
             _ = try? await capture.stop()
-            session = nil; sessionID = nil
+            session = nil; sessionID = nil; recordingURL = nil
             // 모든 입력이 시작되기 전 실패한 새 임시 파일만 정리합니다.
             try? FileManager.default.removeItem(at: url)
             throw error

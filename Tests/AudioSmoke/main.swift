@@ -64,6 +64,42 @@ do {
     catch let error as AppFailure { try check(error.message == "소리노트의 WAV 녹음 형식이 아닙니다.", "형식 검사 실패") }
     checks += 1
 
+    // 모델이 늦어도 구간을 건너뛰지 않고, 중지 시 마지막 짧은 구간을 정확히 한 번 꺼냅니다.
+    var cursor = RecordingIntervalCursor(minutes: 1)
+    let minute: Int64 = 60 * 16_000
+    try check(cursor.next(availableFrames: minute - 1, finished: false) == nil, "미완성 구간을 처리했습니다.")
+    for index in 0..<3 {
+        let range = cursor.next(availableFrames: 3 * minute + 123, finished: false)!
+        try check(range == (Int64(index) * minute)..<(Int64(index + 1) * minute), "대기 구간에 누락·중복이 있습니다.")
+        cursor.processedFrames = range.upperBound
+    }
+    try check(cursor.next(availableFrames: 3 * minute + 123, finished: false) == nil, "녹음 중 꼬리를 조기에 처리했습니다.")
+    let tail = cursor.next(availableFrames: 3 * minute + 123, finished: true)!
+    try check(tail.count == 123, "마지막 짧은 구간이 손실되었습니다.")
+    cursor.processedFrames = tail.upperBound
+    try check(cursor.next(availableFrames: tail.upperBound, finished: true) == nil, "완료 구간을 다시 처리했습니다.")
+    checks += 1
+    let growing = folder.appendingPathComponent("growing.wav")
+    let liveWriter = try PCMRecordingWriter(url: growing)
+    try liveWriter.append([Float](repeating: 0.2, count: 16000))
+    let snapshot = folder.appendingPathComponent("snapshot.wav")
+    try PCMRecordingWriter.copyRange(from: growing, to: snapshot, start: 500, end: 12000)
+    let snapshotBytes = try Data(contentsOf: snapshot)
+    try liveWriter.append([Float](repeating: -0.7, count: 16000))
+    try liveWriter.close()
+    let originalBytes = try Data(contentsOf: growing)
+    try check(snapshotBytes.dropFirst(44) == originalBytes[(44 + 1000)..<(44 + 24000)], "구간 PCM이 원본과 다릅니다.")
+    let snapshotAudio = try AVAudioFile(forReading: snapshot)
+    try check(snapshotAudio.length == 11500, "구간 헤더의 길이가 맞지 않습니다.")
+    let unchanged = try Data(contentsOf: snapshot)
+    try check(unchanged == snapshotBytes, "추가 녹음이 기존 구간 사본을 바꿨습니다.")
+    checks += 1
+    var rejectedRange = false
+    do { try PCMRecordingWriter.copyRange(from: growing, to: folder.appendingPathComponent("bad.wav"), start: 0, end: 32001) }
+    catch { rejectedRange = true }
+    try check(rejectedRange, "아직 기록되지 않은 PCM을 읽었습니다.")
+    checks += 1
+
     var settings = AudioSettings(); settings.source = .both
     let resultURL = folder.appendingPathComponent("converted.wav")
     var captureError: String?

@@ -35,6 +35,38 @@ do {
     let encoded = String(decoding: data, as: UTF8.self)
     try require(!encoded.contains("Key") && !encoded.contains("Token"), "일반 설정에 인증 정보가 포함됨")
     try require(clockText(3661.9) == "01:01:01", "시간 표시 오류")
+    try require(config.qaEnabled && migrated.qaEnabled, "이전 설정의 질문 답변 기본값이 달라졌습니다.")
+    var reduced = config
+    reduced.qaEnabled = false; reduced.diarization = true
+    try require(!reduced.isEnabled(.qa) && !reduced.isEnabled(.embedding) && reduced.isEnabled(.speaker), "기능별 켜짐 상태가 독립적이지 않습니다.")
+    try require(reduced.isEnabled(.asr) && reduced.isEnabled(.summary), "문자 변환·요약이 함께 꺼졌습니다.")
+    let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(reduced))
+    try require(restored == reduced && restored.embedding == config.embedding, "기능 선택 또는 모델 설정이 손실되었습니다.")
+    reduced.qa.model = ""; reduced.embedding.model = ""
+    try reduced.validate()
+    reduced.qaEnabled = true
+    var rejected = false
+    do { try reduced.validate() } catch { rejected = true }
+    try require(rejected, "질문 답변을 켤 때 모델 설정을 검사하지 않았습니다.")
+    try require(!config.intervalSummaryEnabled && config.intervalMinutes == 5 && config.intervalFinalSummary, "구간 요약 기본값 오류")
+    try require(!migrated.intervalSummaryEnabled, "이전 설정에서 자동 요약이 임의로 켜졌습니다.")
+    var intervals = config
+    intervals.intervalSummaryEnabled = true; intervals.intervalMinutes = 3; intervals.intervalFinalSummary = false
+    let intervalSettings = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(intervals))
+    try require(intervalSettings == intervals, "구간 요약 설정 저장 오류")
+    for invalid in [0, 31, -1] {
+        intervals.intervalMinutes = invalid
+        var rejected = false
+        do { try intervals.validate() } catch { rejected = true }
+        try require(rejected, "잘못된 요약 간격을 허용했습니다.")
+    }
+    intervals.asr = ModelProfile(provider: "openai", url: "http://localhost:1234/v1", model: "asr")
+    intervals.intervalMinutes = 14
+    var rejectedAPI = false
+    do { try intervals.validate() } catch { rejectedAPI = true }
+    try require(rejectedAPI, "음성 API 구간 업로드 제한을 검사하지 않았습니다.")
+    intervals.intervalMinutes = 13
+    try intervals.validate()
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: folder) }
     let request: [String: Any] = ["action": "create", "dataDir": folder.path,
@@ -44,6 +76,10 @@ do {
         request: JSONSerialization.data(withJSONObject: request), progress: { print($0) })
     let entry = try JSONDecoder().decode(Entry.self, from: response)
     try require(entry.title == "통합 검사", "Swift → Python → SQLite 연결 오류")
+    var legacyEntry = try JSONSerialization.jsonObject(with: response) as! [String: Any]
+    for key in ["interval_notes", "interval_seconds", "interval_complete"] { legacyEntry.removeValue(forKey: key) }
+    let oldEntry = try JSONDecoder().decode(Entry.self, from: JSONSerialization.data(withJSONObject: legacyEntry))
+    try require(oldEntry.interval_notes.isEmpty && !oldEntry.hasPendingIntervals, "이전 기록 호환 오류")
     let get = try WorkerClient().execute(python: "/usr/bin/python3",
         request: JSONSerialization.data(withJSONObject: ["action": "get", "id": entry.id, "dataDir": folder.path]),
         progress: { print($0) })

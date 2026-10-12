@@ -10,6 +10,10 @@ final class AppStore: ObservableObject {
     @Published var selectedID: String?
     @Published var selected: Entry?
     @Published var busy = false
+    @Published var liveProcessing = false
+    @Published var liveSummaryPaused = false
+    private var operationTask: Task<Void, Never>?
+    private var activeCallID: UUID?
     @Published var progress = ""
     @Published var error: String?
     @Published var notice: String?
@@ -18,6 +22,7 @@ final class AppStore: ObservableObject {
     @Published var search = ""
     @Published var showingSetup = false
     @Published var setupFinished = false
+    @Published var setupRuntimeReady = false
     let audio = AudioController()
     private var activeWorker: WorkerClient?
     private var activeExport: EntryExportJob?
@@ -36,25 +41,39 @@ final class AppStore: ObservableObject {
     func call<T: Decodable>(_ action: String, fields: [String: Any] = [:], as type: T.Type) async throws -> T {
         // macOS의 기본 Python 경로는 개발 도구 설치 창을 띄울 수 있어 준비 전에 실행하지 않습니다.
         guard !needsRuntimeSetup else { throw AppFailure(message: "공통 환경에서 자동 설치 / 복구를 먼저 실행하세요.") }
+        guard action != "ask" || settings.qaEnabled else {
+            throw AppFailure(message: "질문 답변이 꺼져 있습니다. 모델 및 환경 설정에서 다시 켜 주세요.")
+        }
         var request = fields
         request["action"] = action
         request["dataDir"] = AppSettings.directory.path
         request["config"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(settings))
         var secrets: [String: String] = [:]
         // 목록 조회나 문서 저장에는 키체인 접근 자체가 필요하지 않습니다.
-        if ["prepare", "install_models", "transcribe", "summarize", "ask", "diagnostic"].contains(action) {
-            for name in Keychain.names { secrets[name] = try Keychain.read(name) }
+        if ["prepare", "install_models", "transcribe", "summarize", "ask", "diagnostic", "interval", "continueIntervals", "finalizeIntervals"].contains(action) {
+            let enabledKeys = Set(ModelStage.allCases.filter { settings.isEnabled($0) }.map(\.keyName) + ["hfToken"])
+            for name in Keychain.names where enabledKeys.contains(name) { secrets[name] = try Keychain.read(name) }
         }
         request["secrets"] = secrets
         let data = try JSONSerialization.data(withJSONObject: request)
         let python = settings.pythonPath
+        let usesModels = ["prepare", "install_models", "transcribe", "summarize", "ask", "diagnostic", "interval", "continueIntervals", "finalizeIntervals"].contains(action)
+        if usesModels { try settings.runtime.network.validate() }
+        let environment = usesModels ? settings.runtime.network.environment() : nil
         let worker = WorkerClient()
         activeWorker = worker
-        defer { activeWorker = nil }
+        let callID = UUID(); activeCallID = callID
+        defer { activeWorker = nil; activeCallID = nil }
         let owner = self
         let response = try await Task.detached(priority: .userInitiated) {
-            try worker.execute(python: python, request: data) { message in
-                Task { @MainActor in owner.progress = message }
+            try worker.execute(python: python, request: data, environment: environment, update: { data in
+                guard let entry = try? JSONDecoder().decode(Entry.self, from: data) else { return }
+                Task { @MainActor in
+                    guard owner.activeCallID == callID, owner.selectedID == entry.id else { return }
+                    owner.selected = entry
+                }
+            }) { message in
+                Task { @MainActor in if owner.activeCallID == callID { owner.progress = message } }
             }
         }.value
         return try JSONDecoder().decode(type, from: response)
@@ -63,18 +82,25 @@ final class AppStore: ObservableObject {
     func perform(_ message: String, operation: @escaping @MainActor () async throws -> Void) {
         guard !busy else { return }
         busy = true; progress = message; notice = nil
-        Task {
+        operationTask = Task {
             defer { busy = false; progress = "" }
             do { try await operation() }
             catch is CancellationError {
                 notice = "작업을 취소했습니다. 이미 저장된 내용은 유지됩니다."
                 try? await refresh()
             }
-            catch { self.error = error.localizedDescription }
+            catch {
+                self.error = error.localizedDescription
+                // 중간 커밋 뒤 오류가 나도 '이어서 처리'와 저장된 전사문을 바로 보여 줍니다.
+                try? await refresh()
+            }
         }
     }
 
+    func waitForOperation() async { if let operationTask { await operationTask.value } }
+
     func cancel() {
+        if liveProcessing { liveSummaryPaused = true }
         activeWorker?.cancel()
         activeExport?.cancel()
         activeInstaller?.cancel()
@@ -82,29 +108,50 @@ final class AppStore: ObservableObject {
 
     func waitForInstaller() async { if let installerTask { _ = await installerTask.result } }
 
-    func installRuntime(prepareModels: Bool) {
+    func installRuntime(options: RuntimeSettings, prepareModels: Bool) {
         guard !busy, !audio.recording, let resources = RuntimeInstaller.resources else { return }
-        error = nil; setupFinished = false
+        do { try saveRuntimeOptions(options) } catch { self.error = error.localizedDescription; return }
+        error = nil; setupFinished = false; setupRuntimeReady = false
         let installer = RuntimeInstaller()
         let directory = AppSettings.directory
+        let preferred = settings.pythonPath
         activeInstaller = installer
         let task = Task.detached(priority: .userInitiated) {
-            try installer.install(resources: resources, directory: directory) { message in
+            try installer.install(resources: resources, directory: directory, options: options, preferredPython: preferred) { message in
                 Task { @MainActor in self.progress = message }
             }
         }
         installerTask = task
-        perform("자동 설치를 준비하는 중") {
+        perform("실행 환경을 준비하는 중") {
             defer { self.activeInstaller = nil; self.installerTask = nil }
             let python = try await task.value
             try installer.checkCancellation()
             var updated = self.settings; updated.pythonPath = python
             try updated.save(); self.settings = updated
+            // 모델 다운로드가 실패해도 검증된 venv를 다시 설치할 필요가 없습니다.
+            self.setupRuntimeReady = true
+            try await self.refresh()
             if prepareModels { let _: [String: String] = try await self.call("install_models", as: [String: String].self) }
             try installer.checkCancellation()
-            try await self.refresh()
             self.setupFinished = true
             self.notice = prepareModels ? "실행 환경과 선택한 로컬 모델을 준비했습니다." : "실행 환경을 준비했습니다. 모델은 설정에서 이어서 준비할 수 있습니다."
+        }
+    }
+
+    func saveRuntimeOptions(_ options: RuntimeSettings) throws {
+        try options.network.validate()
+        var updated = settings; updated.runtime = options
+        try updated.save(); settings = updated
+    }
+
+    func retrySetupModels(options: RuntimeSettings) {
+        guard !busy, !audio.recording, setupRuntimeReady else { return }
+        do { try saveRuntimeOptions(options) } catch { self.error = error.localizedDescription; return }
+        error = nil
+        perform("모델 준비를 다시 시작하는 중") {
+            let _: [String: String] = try await self.call("install_models", as: [String: String].self)
+            self.setupFinished = true
+            self.notice = "선택한 로컬 모델을 준비했습니다."
         }
     }
 
@@ -134,9 +181,20 @@ final class AppStore: ObservableObject {
             for url in drafts where ["m4a", "wav"].contains(url.pathExtension) {
                 do {
                     if url.pathExtension == "wav" { try PCMRecordingWriter.repairDraft(url) }
-                    let _: Entry = try await self.call("create", fields: ["title": "복구된 녹음",
-                        "kind": "meeting", "audioPath": url.path], as: Entry.self)
+                    let link = url.appendingPathExtension("json")
+                    if let data = try? Data(contentsOf: link),
+                       let association = try? JSONDecoder().decode([String: String].self, from: data),
+                       let id = association["entryID"] {
+                        let entry: Entry = try await self.call("get", fields: ["id": id], as: Entry.self)
+                        if entry.audio_path.isEmpty {
+                            let _: Entry = try await self.call("attachAudio", fields: ["id": id, "audioPath": url.path], as: Entry.self)
+                        }
+                    } else {
+                        let _: Entry = try await self.call("create", fields: ["title": "복구된 녹음",
+                            "kind": "meeting", "audioPath": url.path], as: Entry.self)
+                    }
                     try FileManager.default.removeItem(at: url)
+                    try? FileManager.default.removeItem(at: link)
                     recovered += 1
                 } catch is CancellationError { throw CancellationError() }
                 catch { failed += 1 } // 손상된 한 파일 때문에 다른 녹음의 복구를 막지 않습니다.
@@ -208,11 +266,29 @@ final class AppStore: ObservableObject {
     }
 
     func startRecording() {
-        perform("녹음 입력과 권한 확인 중") { try await self.audio.start(settings: self.settings.audio) }
+        perform("녹음 입력과 권한 확인 중") {
+            if self.settings.intervalSummaryEnabled {
+                try self.settings.validate()
+                if self.needsRuntimeSetup { throw AppFailure(message: "자동 구간 요약을 사용하려면 먼저 실행 환경을 준비하세요.") }
+            }
+            try await self.audio.start(settings: self.settings.audio)
+            if self.settings.intervalSummaryEnabled {
+                do { try await self.runIntervalRecording() }
+                catch { _ = try? await self.audio.stop(); throw error }
+            }
+        }
     }
 
     func stopRecording() {
         guard audio.recording else { return }
+        if liveProcessing {
+            // AI 워커가 바빠도 입력 중지는 즉시 별도 경로로 실행합니다.
+            Task { @MainActor in
+                do { _ = try await self.audio.stop() }
+                catch { self.error = error.localizedDescription }
+            }
+            return
+        }
         perform("녹음을 저장하는 중") {
             guard let url = try await self.audio.stop() else { return }
             let title = "회의 " + Date().formatted(date: .abbreviated, time: .shortened)
@@ -224,9 +300,77 @@ final class AppStore: ObservableObject {
         }
     }
 
+    /// 녹음 큐와 AI 작업은 독립적으로 진행합니다. AI는 한 구간씩 처리하고 메모리에 대기열을 쌓지 않습니다.
+    private func runIntervalRecording() async throws {
+        liveSummaryPaused = false
+        defer { liveProcessing = false; liveSummaryPaused = false }
+        guard let draftURL = audio.recordingURL else { throw AppFailure(message: "녹음 파일이 없습니다.") }
+        let title = "회의 " + Date().formatted(date: .abbreviated, time: .shortened)
+        let entry: Entry = try await call("create", fields: ["title": title, "kind": "meeting", "intervalRecording": true], as: Entry.self)
+        selected = entry; selectedID = entry.id; answer = nil
+        // 비정상 종료해도 이미 만든 구간 요약과 원음을 같은 기록으로 복구합니다.
+        let link = draftURL.appendingPathExtension("json")
+        try JSONEncoder().encode(["entryID": entry.id]).write(to: link, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: link.path)
+        try await refresh()
+        liveProcessing = true
+        var cursor = RecordingIntervalCursor(minutes: settings.intervalMinutes)
+        var source = draftURL
+        var attached = false
+        while true {
+            let finished = !audio.recording
+            if finished && !attached {
+                guard let url = try await audio.completedRecordingURL() else { throw AppFailure(message: "완료된 녹음 파일이 없습니다.") }
+                let saved: Entry = try await call("attachAudio", fields: ["id": entry.id, "audioPath": url.path], as: Entry.self)
+                source = URL(fileURLWithPath: saved.audio_path); selected = saved; attached = true
+                try? FileManager.default.removeItem(at: draftURL)
+                try? FileManager.default.removeItem(at: link)
+            }
+            if liveSummaryPaused {
+                progress = "자동 구간 요약이 중지되었습니다. 녹음은 계속 저장합니다."
+                if finished { break }
+                try await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            let frames = finished ? try PCMRecordingWriter.frameCount(source) : audio.availableFrames
+            guard let range = cursor.next(availableFrames: frames, finished: finished) else {
+                if finished { break }
+                progress = "다음 구간을 기다리는 중 · \(settings.intervalMinutes)분마다 자동 요약"
+                try await Task.sleep(nanoseconds: 500_000_000)
+                continue
+            }
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("sorinote-live-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            let chunk = folder.appendingPathComponent("chunk.wav")
+            defer { try? FileManager.default.removeItem(at: folder) }
+            do {
+                let input = source
+                try await Task.detached(priority: .utility) {
+                    try PCMRecordingWriter.copyRange(from: input, to: chunk, start: range.lowerBound, end: range.upperBound)
+                }.value
+                if liveSummaryPaused { continue }
+                selected = try await call("interval", fields: ["id": entry.id, "audioPath": chunk.path,
+                    "start": Double(range.lowerBound) / 16_000, "end": Double(range.upperBound) / 16_000], as: Entry.self)
+                cursor.processedFrames = range.upperBound
+            } catch {
+                liveSummaryPaused = true
+                notice = error is CancellationError ? "자동 요약을 중지했습니다. 녹음은 계속합니다." :
+                    "자동 요약을 멈췄습니다. 녹음은 계속합니다. " + error.localizedDescription
+                try? await refresh()
+            }
+        }
+        if !liveSummaryPaused, cursor.processedFrames > 0 {
+            selected = try await call("finalizeIntervals", fields: ["id": entry.id], as: Entry.self)
+            notice = "녹음과 구간 요약을 저장했습니다."
+        } else {
+            notice = "녹음을 저장했습니다. ‘구간 처리 이어하기’로 남은 전사와 요약을 처리할 수 있습니다."
+        }
+        try await refresh()
+    }
+
     func processSelected(_ action: String) {
         guard let id = selected?.id else { return }
-        perform(action == "transcribe" ? "문자 변환 준비 중" : "요약 준비 중") {
+        perform(action == "transcribe" || action == "continueIntervals" ? "문자 변환 준비 중" : "요약 준비 중") {
             self.selected = try await self.call(action, fields: ["id": id], as: Entry.self)
             self.answer = nil
             try await self.refresh()
@@ -254,6 +398,10 @@ final class AppStore: ObservableObject {
     }
 
     func ask(_ question: String, all: Bool) {
+        guard settings.qaEnabled else {
+            error = "질문 답변이 꺼져 있습니다. 모델 및 환경 설정에서 다시 켜 주세요."
+            return
+        }
         let scope = all ? "" : selectedID ?? ""
         answer = nil
         perform("질문에 맞는 자료를 찾는 중") {

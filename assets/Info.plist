@@ -6,8 +6,8 @@
   <key>CFBundleName</key><string>SoriNote</string>
   <key>CFBundleDisplayName</key><string>소리노트</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.5.0</string>
-  <key>CFBundleVersion</key><string>5</string>
+  <key>CFBundleShortVersionString</key><string>0.7.0</string>
+  <key>CFBundleVersion</key><string>8</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSMicrophoneUsageDescription</key><string>회의 내용을 맥에 녹음하고 로컬 모델로 문자 변환하기 위해 마이크를 사용합니다.</string>
   <key>NSAudioCaptureUsageDescription</key><string>Teams 등에서 재생되는 시스템 오디오를 사용자가 선택한 회의 녹음에 포함합니다. 화면 영상은 저장하지 않습니다.</string>

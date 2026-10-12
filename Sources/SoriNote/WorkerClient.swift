@@ -21,7 +21,7 @@ final class WorkerClient: @unchecked Sendable {
         }
     }
 
-    func execute(python: String, request: Data, progress: @escaping @Sendable (String) -> Void) throws -> Data {
+    func execute(python: String, request: Data, environment suppliedEnvironment: [String: String]? = nil, update: @escaping @Sendable (Data) -> Void = { _ in }, progress: @escaping @Sendable (String) -> Void) throws -> Data {
         let bundled = Bundle.main.resourceURL?.appendingPathComponent("worker/main.py")
         let source = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("worker/main.py")
@@ -38,7 +38,9 @@ final class WorkerClient: @unchecked Sendable {
         task.standardOutput = output
         // 라이브러리 로그에는 파일 경로나 토큰이 들어갈 수 있어 저장하지 않습니다.
         task.standardError = FileHandle.nullDevice
-        var environment = ProcessInfo.processInfo.environment
+        var environment = suppliedEnvironment ?? ProcessInfo.processInfo.environment
+        environment.removeValue(forKey: "PYTHONPATH")
+        environment.removeValue(forKey: "PYTHONHOME")
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         environment["HF_HUB_DISABLE_TELEMETRY"] = "1"
         environment["PYANNOTE_METRICS_ENABLED"] = "0"
@@ -63,6 +65,8 @@ final class WorkerClient: @unchecked Sendable {
         func consume(_ line: Data) {
             guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return }
             switch event["event"] as? String {
+            case "entry":
+                if let value = event["data"], let data = try? JSONSerialization.data(withJSONObject: value) { update(data) }
             case "progress": progress(event["message"] as? String ?? "처리 중")
             case "result": result = try? JSONSerialization.data(withJSONObject: event["data"] ?? [:])
             case "error": failure = event["message"] as? String

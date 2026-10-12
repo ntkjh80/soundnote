@@ -68,9 +68,13 @@ final class EntryExportJob: @unchecked Sendable {
     }
 
     static func markdown(_ entry: Entry) -> String {
-        "# \(entry.title)\n\n작성 시각: \(entry.created)\n\n## AI 요약\n\n"
+        let intervals = entry.interval_notes.isEmpty ? "" : "\n\n## 구간별 요약\n\n" + entry.interval_notes.map { note in
+            "### \(clockText(note.start)) ~ \(clockText(note.end))\n\n"
+                + (note.summary.isEmpty ? "전사 저장됨 · 요약 대기" : note.summary)
+        }.joined(separator: "\n\n")
+        return "# \(entry.title)\n\n작성 시각: \(entry.created)\n\n## AI 요약\n\n"
             + (entry.summary.isEmpty ? "아직 요약하지 않았습니다." : entry.summary)
-            + "\n\n## 원문\n\n\(entry.text)\n"
+            + intervals + "\n\n## 원문\n\n\(entry.text)\n"
     }
 
     /// bundle의 destination은 부모 폴더, 나머지는 사용자가 선택한 최종 파일 경로입니다.

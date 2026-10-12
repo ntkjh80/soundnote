@@ -1,5 +1,6 @@
 """다운로드 없이 설치 대상 선택, 서버 소유권과 실패 정리를 검사합니다."""
 import io
+import contextlib
 import os
 import signal
 import sys
@@ -71,7 +72,7 @@ class InstallationTests(unittest.TestCase):
         with patch("sorinote.local_server.available", return_value=False), \
              patch("sorinote.local_server.subprocess.Popen", return_value=process), \
              patch("sorinote.local_server.os.killpg") as stop:
-            with self.assertRaisesRegex(ValueError, "시작되지"):
+            with self.assertRaisesRegex(ValueError, "준비 시간"):
                 with managed_ollama("http://127.0.0.1:11434"):
                     pass
             stop.assert_called_once_with(4242, signal.SIGTERM)
@@ -89,6 +90,41 @@ class InstallationTests(unittest.TestCase):
             opener.open.return_value = io.BytesIO(b'{"status":"success"}\n')
             client.pull(lambda _: None)
             check.assert_called_once()
+
+    def test_one_server_scope_covers_whole_model_operation(self):
+        from main import dispatch_with_servers
+        events = []
+        @contextlib.contextmanager
+        def managed(base):
+            events.append("start")
+            try:
+                yield
+            finally:
+                events.append("stop")
+        def operation(*_):
+            events.append("inference")
+            return {"ok": True}
+        with patch("sorinote.local_server.managed_ollama", side_effect=managed) as servers, \
+             patch("main.dispatch", side_effect=operation):
+            result = dispatch_with_servers({"action": "install_models"}, lambda _: None)
+        self.assertEqual(events, ["start", "inference", "stop"])
+        self.assertEqual(result, {"ok": True})
+        servers.assert_called_once()
+
+    def test_whole_operation_cleans_up_server_on_failure(self):
+        from main import dispatch_with_servers
+        events = []
+        @contextlib.contextmanager
+        def managed(base):
+            try:
+                yield
+            finally:
+                events.append("stop")
+        with patch("sorinote.local_server.managed_ollama", side_effect=managed), \
+             patch("main.dispatch", side_effect=KeyboardInterrupt()):
+            with self.assertRaises(KeyboardInterrupt):
+                dispatch_with_servers({"action": "ask"}, lambda _: None)
+        self.assertEqual(events, ["stop"])
 
     def test_remote_pull_rejected(self):
         client = Provider({"provider": "ollama", "url": "https://example.org", "model": "custom"}, True)

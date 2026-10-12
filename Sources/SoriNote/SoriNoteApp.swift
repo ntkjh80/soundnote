@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await store.waitForInstaller()
             await store.waitForExport()
             _ = try? await store.audio.stop()
+            await store.waitForOperation()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

@@ -97,8 +97,8 @@ class StorageTests(unittest.TestCase):
         self.store.db.execute("UPDATE entries SET audio_path='example.wav' WHERE id=?", (entry["id"],))
         self.store.db.commit()
         segments = [{"start": 0, "end": 2, "text": "반갑습니다", "speaker": "미지정"}]
-        with patch("main.audio.transcribe", return_value=([], segments, segments, transcript_text(segments))), \
-             patch("main.audio.diarize", side_effect=RuntimeError("secret-token")):
+        with patch("sorinote.audio.transcribe", return_value=([], segments, segments, transcript_text(segments))), \
+             patch("sorinote.audio.diarize", side_effect=RuntimeError("secret-token")):
             result = dispatch({"action": "transcribe", "dataDir": str(self.store.root),
                 "id": entry["id"], "config": {"diarization": True}}, lambda _: None)
         self.assertIn("반갑습니다", result["text"])

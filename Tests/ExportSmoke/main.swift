@@ -42,6 +42,15 @@ do {
         try require(!names.contains(where: { $0.hasPrefix(".sorinote-export-") }), "임시 파일이 남았습니다.")
     }
 
+    try test("구간 요약의 시각·본문·대기 상태를 Markdown에 보존") {
+        var timed = entry
+        timed.interval_notes = [IntervalNote(ordinal: 0, start: 0, end: 300, summary: "첫 결정", status: "complete"),
+                                IntervalNote(ordinal: 1, start: 300, end: 315, summary: "", status: "transcribed")]
+        let text = EntryExportJob.markdown(timed)
+        try require(text.contains("00:00:00 ~ 00:05:00") && text.contains("첫 결정") && text.contains("전사 저장됨 · 요약 대기"), "구간 요약 내보내기 누락")
+        try require(EntryExportJob.transcript(timed) == EntryExportJob.transcript(entry), "TXT 원문에 AI 요약이 섞였습니다.")
+    }
+
     try test("묶음의 녹음 바이트·확장자, 한국어 전사문·시각·화자·요약") {
         let folder = try save(.bundle, exports)
         try require(try Data(contentsOf: folder.appendingPathComponent("녹음.wav")) == original, "원본과 사본이 다름")

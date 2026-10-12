@@ -1,5 +1,6 @@
 """Ollama와 OpenAI 호환 서버의 차이를 UI 밖으로 감춥니다."""
 import json
+import os
 import math
 import mimetypes
 import urllib.error
@@ -62,6 +63,10 @@ class Provider:
         from .local_server import managed_ollama
         if self.kind != "ollama" or not self.local or "cloud" in self.model.lower():
             raise ValueError("자동 다운로드는 로컬 Ollama 모델에만 사용할 수 있습니다.")
+        if os.environ.get("SORINOTE_OFFLINE") == "1":
+            progress(self.model + " 로컬 설치 확인 중")
+            self.check_local_model()
+            return
         headers = {"Content-Type": "application/json"}
         if self.key:
             headers["Authorization"] = "Bearer " + self.key
@@ -76,7 +81,9 @@ class Provider:
                     for line in response:
                         value = json.loads(line)
                         if value.get("error"):
-                            raise ValueError("Ollama 모델 다운로드에 실패했습니다. 모델 이름과 인터넷 연결을 확인하세요.")
+                            from .network import failure_hint
+                            hint = failure_hint(ValueError(str(value["error"])))
+                            raise ValueError(hint or "Ollama 모델 다운로드에 실패했습니다. 모델 이름과 인터넷 연결을 확인하세요.")
                         total = value.get("total", 0)
                         if total > 0:
                             percent = int(value.get("completed", 0) * 100 / total)

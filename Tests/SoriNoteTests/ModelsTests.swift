@@ -27,6 +27,41 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(value)).embedding, value.embedding)
     }
 
+    func testOptionalFeaturesPersistAndKeepProfiles() throws {
+        let previous = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        XCTAssertTrue(previous.qaEnabled)
+        var value = previous
+        value.qaEnabled = false; value.diarization = true
+        XCTAssertFalse(value.isEnabled(.embedding))
+        XCTAssertFalse(value.isEnabled(.qa))
+        XCTAssertTrue(value.isEnabled(.speaker))
+        XCTAssertTrue(value.isEnabled(.asr))
+        XCTAssertTrue(value.isEnabled(.summary))
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(value))
+        XCTAssertEqual(restored, value)
+        XCTAssertEqual(restored.embedding, previous.embedding)
+        value.qa.model = ""
+        try value.validate()
+        value.qaEnabled = true
+        XCTAssertThrowsError(try value.validate())
+    }
+
+    func testIntervalSettingsAndLegacyDefaults() throws {
+        var value = try JSONDecoder().decode(AppSettings.self, from: Data("{}".utf8))
+        XCTAssertFalse(value.intervalSummaryEnabled)
+        XCTAssertEqual(value.intervalMinutes, 5)
+        XCTAssertTrue(value.intervalFinalSummary)
+        value.intervalSummaryEnabled = true; value.intervalMinutes = 3; value.intervalFinalSummary = false
+        XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(value)), value)
+        value.intervalMinutes = 0
+        XCTAssertThrowsError(try value.validate())
+        value.intervalMinutes = 14
+        value.asr = ModelProfile(provider: "openai", url: "http://localhost:1234/v1", model: "asr")
+        XCTAssertThrowsError(try value.validate())
+        value.intervalMinutes = 13
+        XCTAssertNoThrow(try value.validate())
+    }
+
     func testTimeFormatting() {
         XCTAssertEqual(clockText(-10), "00:00:00")
         XCTAssertEqual(clockText(3661.9), "01:01:01")

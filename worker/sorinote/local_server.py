@@ -1,4 +1,4 @@
-"""설치 패키지에 포함된 Ollama를 API 호출 동안만 실행합니다.
+"""설치 패키지에 포함된 Ollama를 AI 작업 동안 실행합니다.
 
 이미 실행 중인 서버는 그대로 사용하며, 직접 만든 프로세스만 정리합니다.
 사용자가 고른 다른 주소나 OpenAI 호환 서버를 자동으로 실행하지 않습니다.
@@ -44,10 +44,11 @@ def managed_ollama(base):
     except OSError:
         raise ValueError("내장 Ollama를 실행하지 못했습니다. 앱을 다시 설치하거나 설정에서 다른 서버를 선택하세요.") from None
     try:
-        deadline = time.monotonic() + 12
+        # GPU를 처음 확인하는 데 시간이 걸릴 수 있어 단순 포트 열림보다 준비 응답을 기다립니다.
+        deadline = time.monotonic() + 45
         while not available(base):
             if process.poll() is not None or time.monotonic() >= deadline:
-                raise ValueError("내장 Ollama가 시작되지 않았습니다. 11434 포트의 사용 상태를 확인하세요.")
+                raise ValueError("내장 Ollama가 준비 시간 안에 응답하지 않았습니다. 11434 포트와 GPU 사용 상태를 확인하고 다시 시도하세요.")
             time.sleep(0.15)
         yield
     finally:

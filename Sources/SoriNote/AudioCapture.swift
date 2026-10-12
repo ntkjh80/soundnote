@@ -46,6 +46,7 @@ struct CaptureStatus {
     var microphone: Double = 0
     var system: Double = 0
     var lateFrames: Int64 = 0
+    var writtenFrames: Int64 = 0
 }
 
 /// 가변 상태는 queue 안에서만 접근합니다. 공개 제어 메서드도 이 큐를 거치므로 Sendable을 수동 보증합니다.
@@ -174,7 +175,7 @@ final class AudioCaptureSink: NSObject, SCStreamOutput, SCStreamDelegate, @unche
                 return meter.0
             }
             return CaptureStatus(elapsed: Double(timeline.frame(at: now)) / CaptureTimeline.sampleRate,
-                                 microphone: level(.microphone), system: level(.system), lateFrames: timeline.lateFrames)
+                                 microphone: level(.microphone), system: level(.system), lateFrames: timeline.lateFrames, writtenFrames: timeline.writtenFrames)
         }
     }
     func beginStop() { queue.sync { stopping = true; timeline.pause(at: Self.now()) } }

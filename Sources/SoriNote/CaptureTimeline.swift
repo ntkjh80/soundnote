@@ -112,6 +112,41 @@ final class PCMRecordingWriter {
         add(UInt16(2)); add(UInt16(16)); data.append(Data("data".utf8)); add(bytes)
         return data
     }
+    /// 이미 기록된 PCM 본문만 읽습니다. 녹음 큐를 멈추거나 파일 전체를 복사하지 않습니다.
+    static func copyRange(from source: URL, to target: URL, start: Int64, end: Int64) throws {
+        let available = try frameCount(source)
+        guard start >= 0, end > start, end <= available, end - start <= 30 * 60 * 16_000 else {
+            throw AppFailure(message: "아직 저장되지 않았거나 너무 긴 녹음 구간입니다.")
+        }
+        let input = try FileHandle(forReadingFrom: source)
+        defer { try? input.close() }
+        guard FileManager.default.createFile(atPath: target.path, contents: header(bytes: UInt32((end - start) * 2)),
+                attributes: [.posixPermissions: 0o600]) else { throw AppFailure(message: "구간 사본을 만들지 못했습니다.") }
+        let output = try FileHandle(forWritingTo: target)
+        defer { try? output.close() }
+        try output.seekToEnd()
+        try input.seek(toOffset: UInt64(44 + start * 2))
+        var remaining = (end - start) * 2
+        while remaining > 0 {
+            guard let data = try input.read(upToCount: Int(min(65_536, remaining))), !data.isEmpty else {
+                throw AppFailure(message: "녹음 구간을 끝까지 읽지 못했습니다.")
+            }
+            try output.write(contentsOf: data)
+            remaining -= Int64(data.count)
+        }
+        try output.synchronize()
+    }
+    static func frameCount(_ url: URL) throws -> Int64 {
+        let input = try FileHandle(forReadingFrom: url)
+        defer { try? input.close() }
+        let data = try input.read(upToCount: 44) ?? Data()
+        let expected = header(bytes: 0)
+        guard data.count == 44, data[0..<4] == expected[0..<4], data[8..<40] == expected[8..<40] else {
+            throw AppFailure(message: "소리노트의 WAV 녹음 형식이 아닙니다.")
+        }
+        let size = try input.seekToEnd()
+        return Int64(max(44, size) - 44) / 2
+    }
     static func repairDraft(_ url: URL) throws {
         let file = try FileHandle(forUpdating: url)
         defer { try? file.close() }
@@ -130,5 +165,18 @@ final class PCMRecordingWriter {
         try file.truncate(atOffset: UInt64(bytes) + 44)
         try file.seek(toOffset: 0); try file.write(contentsOf: header(bytes: bytes))
         try file.synchronize()
+    }
+}
+
+/// 처리 속도가 느려도 이미 끝난 구간 다음부터 하나씩 꺼냅니다. 간격은 벽시계가 아닌 녹음 길이입니다.
+struct RecordingIntervalCursor {
+    let framesPerInterval: Int64
+    var processedFrames: Int64 = 0
+    init(minutes: Int) { framesPerInterval = Int64(minutes) * 60 * 16_000 }
+    func next(availableFrames: Int64, finished: Bool) -> Range<Int64>? {
+        guard framesPerInterval > 0, availableFrames > processedFrames else { return nil }
+        let end = min(availableFrames, processedFrames + framesPerInterval)
+        guard finished || end - processedFrames == framesPerInterval else { return nil }
+        return processedFrames..<end
     }
 }

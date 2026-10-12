@@ -1,13 +1,13 @@
 """사용자가 선택한 로컬 모델만 준비합니다. API 설정과 기존 기록은 바꾸지 않습니다."""
 from . import audio
-from .config import validate_profile
+from .config import validate_profile, stage_enabled
 from .providers import Provider
 
 
 def install_models(config, secrets, progress):
     seen = set()
     for stage in ("asr", "embedding", "summary", "qa", "speaker"):
-        if stage == "speaker" and not config["diarization"]:
+        if not stage_enabled(config, stage):
             continue
         profile = config[stage]
         if profile["provider"] == "openai":
@@ -23,5 +23,5 @@ def install_models(config, secrets, progress):
             client.pull(progress)
         else:
             audio.prepare(config, secrets, progress, stage)
-    return {"message": "선택한 로컬 모델을 준비했습니다. API 방식은 지정한 서버를 그대로 사용합니다."}
+    return {"message": "사용 중인 로컬 모델을 준비했습니다. 꺼진 기능과 API 방식은 건너뜁니다."}
 

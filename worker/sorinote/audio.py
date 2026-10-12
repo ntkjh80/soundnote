@@ -15,7 +15,7 @@ def model_path(name, download=False, token=""):
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError, GatedRepoError, RepositoryNotFoundError
     try:
-        return snapshot_download(repo_id=name, token=token or None, local_files_only=not download)
+        return snapshot_download(repo_id=name, token=token or None, local_files_only=not download or os.environ.get("SORINOTE_OFFLINE") == "1")
     except LocalEntryNotFoundError:
         raise ValueError("저장된 모델을 찾지 못했습니다. 설정을 저장한 뒤 해당 단계의 '모델 다운로드 / 준비'를 실행하세요.") from None
     except GatedRepoError:
@@ -26,15 +26,19 @@ def model_path(name, download=False, token=""):
 
 def prepare(config, secrets, progress, role=None):
     """모델 다운로드는 사용자가 준비 버튼을 눌렀을 때만 허용합니다."""
-    from .config import validate_profile
+    from .config import validate_profile, stage_enabled
     roles = [role] if role else ["asr", "embedding"] + (["speaker"] if config["diarization"] else [])
     for stage in roles:
         if stage not in ("asr", "speaker", "embedding", "summary", "qa"):
             raise ValueError("지원하지 않는 모델 단계입니다.")
+        if not stage_enabled(config, stage):
+            if role:
+                raise ValueError("이 기능은 꺼져 있습니다. 모델 및 환경 설정에서 켠 뒤 준비하세요.")
+            continue
         profile = config[stage]
         validate_profile(stage, profile, config["allowRemote"])
         if profile["provider"] in ("mlx", "pyannote", "sentence_transformers"):
-            progress(profile["model"] + " 다운로드 중 · 이용 조건 동의가 필요할 수 있습니다")
+            progress(profile["model"] + (" 로컬 캐시 확인 중" if os.environ.get("SORINOTE_OFFLINE") == "1" else " 다운로드 중 · 이용 조건 동의가 필요할 수 있습니다"))
             model_path(profile["model"], True, secrets.get("hfToken", ""))
         elif profile["provider"] == "ollama":
             from .providers import Provider
