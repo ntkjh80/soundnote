@@ -38,7 +38,7 @@ Google AI Edge Foresight의 사용 흐름을 참고한 독립 프로젝트입니
 
 **현재 설치 파일은 개발용 빌드로, Developer ID 서명과 Apple 공증은 아직 적용하지 않았습니다.** 새 맥의 전체 설치 경험도 별도 확인이 필요합니다. [설치 안내서](docs/INSTALLATION.md)에 사용 순서, 저장 위치, 재시도, 배포용 서명 절차와 구조도를 정리했습니다.
 
-소스에서 설치 파일을 만들려면 Command Line Tools가 있는 맥에서 다음을 실행합니다.
+**GitHub에서 소스만 받았다면 `dist` 폴더가 없는 것이 정상입니다.** 설치 파일은 Git에서 제외되어 있으므로 아래 [소스에서 빌드하기](#소스에서-빌드하기) 순서에 따라 직접 만드세요. 개발 도구가 준비되어 있다면 프로젝트 루트에서 다음 명령으로 **자동 설치 / 복구 기능을 포함한 앱과 설치 파일**을 함께 생성할 수 있습니다.
 
 ```bash
 bash scripts/build-installer.sh
@@ -60,7 +60,7 @@ bash scripts/build-installer.sh
 
 모델 준비가 실패하면 완료된 venv는 유지됩니다. 네트워크·인증 설정을 고친 뒤 **모델 준비 다시 시도**를 누르거나 **사용 시작** 후 각 단계에서 준비하세요. 오류 화면의 **진단 내용 복사**는 설치 단계와 민감 정보를 가린 오류 내용을 복사합니다.
 
-소스 개발 환경은 다음처럼 기존 Python으로 venv 구성과 앱 실행을 이어서 할 수 있습니다. 경로는 회사에서 설치한 Python에 맞게 바꾸세요.
+프로젝트의 venv를 직접 관리하는 **개발용 빌드**는 다음처럼 구성과 실행을 이어서 할 수 있습니다. 이 명령으로 만드는 앱에는 자동 설치 / 복구 도구가 포함되지 않습니다. 해당 메뉴가 필요하면 아래의 **권장 설치 패키지 빌드**를 사용하세요. Python 경로는 회사에서 설치한 위치에 맞게 바꾸세요.
 
 ```bash
 bash scripts/setup.sh --python /opt/homebrew/bin/python3.12 --launch
@@ -70,14 +70,118 @@ bash scripts/setup.sh --python /opt/homebrew/bin/python3.12 --launch
 
 ## 소스에서 빌드하기
 
-### 1. 개발 도구와 Ollama 준비
+**다른 맥에서 소스만 받아 처음 실행하거나, 자동 설치 / 복구 기능을 사용하려면 `bash scripts/build-installer.sh`를 권장합니다.** Python·venv·모델 준비는 빌드 후 앱에서 진행합니다. 이 방식은 `setup.sh`를 먼저 실행하거나 Python·Homebrew·Ollama를 미리 설치할 필요가 없습니다.
 
-터미널에서 프로젝트 폴더로 이동하세요. 아래 명령은 이 README가 있는 프로젝트 루트 폴더에서 실행합니다.
+| 목적 | 실행할 명령 | 생성 결과와 자동 설치 기능 |
+| --- | --- | --- |
+| 다른 맥에서 처음 사용하거나 설치 파일 배포 · 권장 | `bash scripts/build-installer.sh` | `.app` + `.pkg` + 체크섬. **자동 설치 / 복구 포함** |
+| 설치 패키지 없이 앱만 생성 | `bash scripts/build-app.sh --installer` | `.app`. **자동 설치 / 복구 포함** |
+| 프로젝트 venv를 직접 관리하며 개발 | `bash scripts/setup.sh` 후 `bash scripts/build-app.sh` | 개발용 `.app`. **자동 설치 / 복구 도구 제외** |
+
+세 방식은 모두 `dist/SoriNote.app`을 갱신합니다. `build-app.sh`를 옵션 없이 다시 실행하면 앱에서 자동 설치 도구가 빠지므로, 필요한 방식의 명령을 선택하세요.
+
+### 1. 새 맥의 개발 도구 준비
+
+Apple Silicon 맥과 macOS 14 이상을 대상으로 합니다. 터미널에서 아래 명령을 실행하고 `uname -m`의 결과가 `arm64`인지 확인하세요.
+
+```bash
+uname -m
+sw_vers -productVersion
+```
 
 ```bash
 # Command Line Tools가 없는 맥에서만 실행합니다.
 xcode-select --install
 ```
+
+설치 창의 작업이 끝난 다음 개발 도구를 확인합니다. 앱 빌드는 Swift Package Manager를 사용하며 별도 Xcode 프로젝트를 만들 필요가 없습니다.
+
+```bash
+xcode-select -p
+swift --version
+git --version
+```
+
+### 2. 소스 받기와 프로젝트 폴더 확인
+
+GitHub에서 저장소를 복제하거나 ZIP으로 받아 압축을 푸세요. 아래 주소의 `YOUR_ACCOUNT`와 `YOUR_REPOSITORY`는 실제 저장소 정보로 바꾸어 사용합니다. 이미 소스를 받았다면 복제 명령은 건너뛰고 해당 폴더로 이동하세요.
+
+```bash
+mkdir -p ~/study
+cd ~/study
+git clone https://github.com/YOUR_ACCOUNT/YOUR_REPOSITORY.git SoundNote
+cd SoundNote
+```
+
+이후 명령은 **`README.md`, `Package.swift`, `Sources/`, `worker/`, `scripts/`, `installer/`, `assets/`가 있는 프로젝트 루트**에서 실행합니다. ZIP으로 받은 폴더 이름이 다르면 실제 폴더로 이동하세요. 이전 맥의 `.venv`, `.tools`, `.build`, `.runtime`, `dist`는 복사하지 않아도 됩니다. 특히 venv는 실행 파일의 절대 경로를 사용하므로 새 맥에서 구성합니다.
+
+### 3. 권장: 자동 설치 기능을 포함한 설치 패키지 빌드
+
+```bash
+bash scripts/build-installer.sh
+```
+
+Swift Release 빌드 → 공식 uv·Ollama 도구 다운로드와 해시 검증 → 앱 리소스 포함 → 개발용 서명 → `.pkg` 생성 순서로 진행합니다. 처음에는 도구를 받기 위한 인터넷 연결이 필요합니다. Python 실행 환경, AI 패키지와 모델 가중치는 이 단계에서 설치하지 않습니다.
+
+현재 버전의 결과물은 다음과 같습니다. 버전이 바뀌면 `.pkg`와 체크섬 파일 이름도 함께 바뀝니다.
+
+```text
+dist/
+├── SoriNote.app
+├── SoriNote-0.7.0-arm64.pkg
+└── SoriNote-0.7.0-arm64.pkg.sha256
+```
+
+설치 파일을 열고 macOS의 설치 절차를 마칩니다.
+
+```bash
+open dist/SoriNote-0.7.0-arm64.pkg
+```
+
+설치가 끝난 뒤 응용 프로그램에 설치된 앱을 실행합니다.
+
+```bash
+open /Applications/SoriNote.app
+```
+
+현재는 개발용 임시 서명을 사용하며 Developer ID 서명·Apple 공증은 적용하지 않았습니다. 배포용 서명은 [설치 안내서](docs/INSTALLATION.md#서명과-공증)를 참고하세요.
+
+`bash scripts/build-installer.sh`는 파일에 실행 권한이 없어도 실행할 수 있습니다. `./scripts/build-installer.sh`로 직접 실행할 때 `permission denied`가 나오면 프로젝트 루트에서 아래처럼 실행 권한을 부여하세요. 실행 권한은 Git 커밋에도 포함할 수 있으며, 이전 커밋이나 파일을 옮긴 방식에 따라 권한이 빠질 수 있습니다.
+
+```bash
+chmod +x scripts/build-installer.sh
+./scripts/build-installer.sh
+```
+
+### 4. 앱에서 Python·venv와 모델 준비
+
+첫 실행의 **소리노트 사용 준비**에서 실행 환경을 선택합니다. 기존 설정 때문에 이 화면이 나오지 않으면 **모델 및 환경 설정 → 공통 환경 → 자동 설치 / 복구…**를 여세요.
+
+| 새 맥의 상태 | 실행 환경 선택 |
+| --- | --- |
+| 설치된 Python을 먼저 찾고, 없으면 내려받고 싶음 | **자동 선택 · 설치된 Python 우선** |
+| 회사에서 승인한 ARM64 Python 3.12가 있음 | **기존 Python으로 전용 venv 생성** → 그 맥의 Python 실행 파일 선택 |
+| 소리노트에 필요한 패키지를 갖춘 venv가 있음 | **준비된 venv 연결** → 그 맥의 `venv/bin/python` 선택 |
+| 소리노트용 Python을 새로 내려받고 싶음 | **전용 Python 다운로드** |
+
+venv는 화면에서 실행 파일 경로를 직접 지정하면 됩니다. 터미널에서 미리 활성화할 필요가 없습니다. 회사 환경에서는 **회사 네트워크 · 인증서 · 오프라인 설치**를 먼저 설정하세요. 처음에는 **현재 설정의 로컬 모델도 함께 준비**를 끄고 실행 환경만 준비하면 환경 설치와 모델 다운로드의 실패 지점을 구분하기 쉽습니다. 모델은 나중에 단계별 **모델 다운로드 / 준비**로 받을 수 있습니다.
+
+앱 안의 다운로드 설정은 **앱 실행 후의 Python·패키지·모델 준비**에 적용됩니다. 앞선 빌드 단계의 uv·Ollama 다운로드는 터미널의 `curl`로 처리하므로, 회사에서 그 다운로드가 막히면 터미널의 인증서·프록시와 다운로드 허용 정책을 별도로 확인해야 합니다. 자세한 설정은 [회사 환경 설치 안내](docs/INSTALLATION.md#회사-네트워크에서-설치하기)를 참고하세요.
+
+### 선택: 자동 설치 기능이 있는 앱만 빌드하기
+
+`.pkg` 없이 `.app`만 필요하다면 프로젝트 루트에서 다음을 실행합니다. 이 방식에도 uv·Ollama 도구와 **자동 설치 / 복구** 메뉴가 포함됩니다.
+
+```bash
+bash scripts/build-app.sh --installer
+open dist/SoriNote.app
+```
+
+### 개발용: 프로젝트의 venv를 직접 관리하기
+
+아래는 Python 환경과 Ollama를 직접 관리하며 코드를 수정하는 경우의 절차입니다. 이미 위의 설치 패키지 방식으로 준비했다면 추가로 실행하지 않아도 됩니다.
+
+#### 1. Ollama 준비
 
 [Ollama 공식 설치 페이지](https://ollama.com/download/mac)에서 macOS용 Ollama를 설치하고 실행합니다. 터미널에서 서버를 실행하려면 아래 명령을 별도 창에 입력하세요. 앱으로 이미 실행 중이라면 중복 실행하지 않아도 됩니다.
 
@@ -94,7 +198,7 @@ ollama pull gemma4:e4b
 
 Gemma 4를 지원하는 최신 Ollama가 필요합니다. 이미 사용하는 로컬 모델이 있다면 모델을 추가로 받는 대신 앱 설정에서 그 이름으로 바꿔도 됩니다. 모델 설치 시 각 모델의 이용 조건도 확인해 주세요.
 
-### 2. 음성 엔진 설치와 앱 빌드
+#### 2. 음성 엔진 설치와 앱 빌드
 
 ```bash
 bash scripts/setup.sh
@@ -108,7 +212,7 @@ open dist/SoriNote.app
 
 **위 방식은 개발용 빌드입니다.** `.app`을 옮겨도 기존 프로젝트의 `.venv`는 필요합니다. 프로젝트 경로를 바꾼 경우 `setup.sh`와 `build-app.sh`를 다시 실행하고 Python 경로를 수정하세요. 다른 맥에 설치할 파일은 `build-installer.sh`로 만듭니다. 설치 패키지 버전은 개발 맥의 `.venv` 경로를 포함하지 않고, 받는 맥에서 전용 환경을 새로 준비합니다.
 
-### 3. 앱에서 모델 준비
+#### 3. 앱에서 모델 준비
 
 1. 왼쪽 아래 **모델 및 환경 설정**을 엽니다. 앱 안의 설정창에서 바로 수정할 수 있습니다.
 2. **공통 환경**에서 Python 경로가 이 프로젝트의 `.venv/bin/python`인지 확인합니다.
@@ -119,7 +223,7 @@ open dist/SoriNote.app
 
 준비 버튼은 현재 설정을 저장한 뒤 해당 단계의 모델만 다운로드합니다. 평소 전사와 검색은 캐시만 사용합니다. 개발용 빌드에서 요약과 질문 답변을 쓰려면 로컬 Ollama를 직접 실행하세요. 설치 패키지 버전은 기본 주소에 Ollama가 없을 때 내장 도구를 자동 실행합니다.
 
-### 4. 첫 회의 기록
+## 첫 회의 기록
 
 **새 회의 녹음 → 녹음 완료 → 문자 변환 → AI 요약 만들기** 순서로 사용합니다. 오른쪽 질문 패널에서는 “담당자별로 해야 할 일을 알려줘”처럼 질문할 수 있습니다.
 
